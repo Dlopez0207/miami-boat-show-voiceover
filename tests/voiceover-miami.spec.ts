@@ -182,7 +182,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
       const dismissBanner = async (log: (s: string) => void) => {
         for (const [target, label] of [[/Opt out of the sale/i, "Opt out of the sale of your personal information"], [/Acknowledge and close dialog/i, "Okay"]] as const) {
           let reached = BANNER.test(await say()) && target.test(await say());
-          for (let i = 0; i < 6 && !reached; i++) { await voiceOver.press("Tab"); const p = await say(); log(p); reached = target.test(p); if (!BANNER.test(p) && p) break; }
+          for (let i = 0; i < 25 && !reached && !overBudget(); i++) { await voiceOver.press("Tab"); const p = await say(); log(p); reached = target.test(p); }
           if (!reached) continue;
           log(`[VO-Space on "${label}"]`);
           await voiceOver.act({ capture: true }); log(await say());
@@ -268,7 +268,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
           await back();
           await scripted("Cookie banner: privacy-preserving choice with VoiceOver (Opt out, then Okay if still open)", async (log) => dismissBanner(log));
           await back();
-          await run(`Tab order from the top (${tabLabel}) after the cookie banner was closed`, steps(pg.tabs), () => voiceOver.press(TABKEY), true);
+          await run(`Tab order from the top (${tabLabel}) after the cookie-banner step`, steps(pg.tabs), () => voiceOver.press(TABKEY), true);
         }
         if (MODE === "full" && browserName === "webkit") {
           await back();
