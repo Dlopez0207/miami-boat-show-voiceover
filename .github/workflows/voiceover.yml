@@ -32,15 +32,15 @@ jobs:
         run: |
           all='[
             {"browser":"webkit","page":"home"},
-            {"browser":"webkit","page":"get-updates"},
             {"browser":"webkit","page":"faq"},
-            {"browser":"webkit","page":"download-maps"},
-            {"browser":"webkit","page":"show-overview"},
+            {"browser":"webkit","page":"get-updates"},
+            {"browser":"chromium","page":"home"},
+            {"browser":"webkit","page":"es-home"},
             {"browser":"webkit","page":"press"},
             {"browser":"webkit","page":"press-article"},
             {"browser":"webkit","page":"why-exhibit"},
-            {"browser":"webkit","page":"es-home"},
-            {"browser":"chromium","page":"home"}
+            {"browser":"webkit","page":"show-overview"},
+            {"browser":"webkit","page":"download-maps"}
           ]'
           only="${ONLY:-all}"
           picked=$(echo "$all" | jq -c --arg only "$only" '

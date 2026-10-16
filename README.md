@@ -13,6 +13,10 @@ Per page: linear read-through (VO-Right Arrow), heading navigation (VO-Cmd-H), l
 - download-maps: links (VO-Cmd-L) to the PDF maps
 - show-overview, es-home: controls (VO-Cmd-J); press, press-article, why-exhibit: graphics (VO-Cmd-G)
 
+Cookie banner: the Transcend "This website processes personal data" banner shown to US visitors keeps Tab focus
+inside itself. The spec records that, then picks the privacy-preserving choice with VoiceOver ("Opt out of the sale
+of your personal information", then "Okay" if still open) and records the Tab order again.
+
 Safety: the spec aborts every request that is not GET/HEAD and every reCAPTCHA verify/submit call before VoiceOver
 touches the page, so the form is never sent. No personal data is typed.
 

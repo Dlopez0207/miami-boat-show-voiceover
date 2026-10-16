@@ -17,9 +17,9 @@ const ORIGIN = process.env.VO_ORIGIN ?? "https://www.miamiboatshow.com";
 type Extra = "menu" | "controls" | "graphics" | "links" | "form" | "accordion";
 type PageDef = { slug: string; path: string; read: number; headings: number; landmarks: number; tabs: number; extras: Extra[] };
 const PAGES: PageDef[] = [
-  { slug: "home", path: "/", read: 220, headings: 30, landmarks: 15, tabs: 70, extras: ["menu", "controls", "graphics"] },
+  { slug: "home", path: "/", read: 200, headings: 30, landmarks: 15, tabs: 60, extras: ["menu", "controls", "graphics"] },
   { slug: "get-updates", path: "/attend/get-updates/", read: 110, headings: 20, landmarks: 12, tabs: 45, extras: ["form"] },
-  { slug: "faq", path: "/attend/faq-page/", read: 220, headings: 40, landmarks: 12, tabs: 60, extras: ["accordion", "links"] },
+  { slug: "faq", path: "/attend/faq-page/", read: 200, headings: 40, landmarks: 12, tabs: 60, extras: ["accordion", "links"] },
   { slug: "download-maps", path: "/attend/download-maps/", read: 120, headings: 20, landmarks: 12, tabs: 50, extras: ["links"] },
   { slug: "show-overview", path: "/attend/show-overview/", read: 150, headings: 25, landmarks: 12, tabs: 55, extras: ["controls"] },
   { slug: "press", path: "/press/", read: 170, headings: 30, landmarks: 12, tabs: 60, extras: ["graphics"] },
@@ -76,7 +76,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         const checks: [string, string][] = [
           ["#onetrust-banner-sdk", "OneTrust cookie banner"], ["#CybotCookiebotDialog", "Cookiebot dialog"], [".osano-cm-dialog", "Osano dialog"],
           ["#truste-consent-track", "TrustArc banner"], ["#usercentrics-root", "Usercentrics"], [".grecaptcha-badge", "Google reCAPTCHA badge"],
-          ["wistia-player", "Wistia video player"], ["iframe[src*='google.com/maps']", "Google Maps iframe"], ["[class*='swiper']", "Swiper carousel"],
+          ["#transcend-consent-manager", "Transcend consent manager (closed shadow DOM)"], ["wistia-player", "Wistia video player"], ["iframe[src*='google.com/maps']", "Google Maps iframe"], ["[class*='swiper']", "Swiper carousel"],
         ];
         for (const [sel, label] of checks) { const el = document.querySelector(sel); if (el) found.push(`${label}${vis(el) ? "" : " (hidden)"}`); }
         const cookieDialog = [...document.querySelectorAll("[role=dialog],[aria-modal=true]")].find((d) => vis(d) && /cookie|consent|privacy/i.test(d.textContent ?? ""));
@@ -130,8 +130,33 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         sections.push({ title, phrases, end });
         write();
       };
+      // The Transcend "This website processes personal data" banner (shown to US visitors) keeps Tab focus inside
+      // itself. To reach the page content, the harness picks the privacy-preserving choice with VoiceOver:
+      // VO-Space on "Opt out of the sale of your personal information", then "Okay" if the banner is still open.
+      // If it still does not close, the banner is hidden through Transcend's own API (logged as a harness action).
+      const BANNER = /Acknowledge and close dialog|Opt out of the sale|Switch language|cookie consent banner/i;
+      const bannerOpen = () => page.evaluate(() => {
+        const host = document.querySelector("#transcend-consent-manager") as HTMLElement | null;
+        return !!host && host.getClientRects().length > 0 && getComputedStyle(host).display !== "none" && getComputedStyle(host).visibility !== "hidden";
+      }).catch(() => false);
+      const dismissBanner = async (log: (s: string) => void) => {
+        for (const [target, label] of [[/Opt out of the sale/i, "Opt out of the sale of your personal information"], [/Acknowledge and close dialog/i, "Okay"]] as const) {
+          let reached = BANNER.test(await say()) && target.test(await say());
+          for (let i = 0; i < 6 && !reached; i++) { await voiceOver.press("Tab"); const p = await say(); log(p); reached = target.test(p); if (!BANNER.test(p) && p) break; }
+          if (!reached) continue;
+          log(`[VO-Space on "${label}"]`);
+          await voiceOver.act({ capture: true }); log(await say());
+          await page.waitForTimeout(1500); log(`[after 1.5 s] ${await say()}`);
+          await voiceOver.press("Tab"); const p = await say(); log(`[next Tab] ${p}`);
+          if (!BANNER.test(p)) return "banner closed with VoiceOver";
+        }
+        const hid = await page.evaluate(async () => { const t = (window as any).transcend; if (t?.hideConsentManager) { await t.hideConsentManager(); return true; } return false; }).catch(() => false);
+        log(`[harness: banner ${hid ? "hidden with transcend.hideConsentManager()" : "could not be closed"}]`);
+        return hid ? "banner hidden by the harness (not by VoiceOver)" : "banner still open";
+      };
       // Presses Tab (spoken output captured) until the focused element matches `selector`, or `max` presses.
       const tabTo = async (selector: string, max: number, log: (s: string) => void) => {
+        let bannerTries = 0;
         for (let i = 1; i <= max; i++) {
           if (overBudget()) return false;
           await voiceOver.press("Tab");
@@ -139,6 +164,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
           const hit = await page.evaluate((sel) => !!document.activeElement && document.activeElement.matches(sel), selector).catch(() => false);
           log(`${hit ? "[target] " : ""}${p}`);
           if (hit) return true;
+          if (BANNER.test(p) && bannerTries++ < 1) log(`[${await dismissBanner(log)}]`);
         }
         return false;
       };
@@ -191,7 +217,13 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         await run("Landmark / web-spot navigation (VO-Cmd-N, Guidepup nextLandmark)", steps(pg.landmarks), () => vo.nextLandmark({ capture: true }), true);
 
         await back();
-        await run("Tab order (Tab key)", steps(pg.tabs), () => voiceOver.press("Tab"), false);
+        const bannerAtStart = await bannerOpen();
+        await run(`Tab order from the top (Tab key)${bannerAtStart ? " with the cookie banner open" : ""}`, bannerAtStart ? steps(16) : steps(pg.tabs), () => voiceOver.press("Tab"), false);
+
+        if (await bannerOpen()) {
+          await back();
+          await scripted("Cookie banner: privacy-preserving choice with VoiceOver (Opt out, then Okay if still open)", async (log) => dismissBanner(log));
+        }
 
         if (pg.extras.includes("menu")) {
           await back();
@@ -223,19 +255,6 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
             await voiceOver.press("Escape");
             return "done";
           });
-        }
-
-        if (pg.extras.includes("controls")) {
-          await back();
-          await run("Form controls / buttons (VO-Cmd-J, find next control; carousel and video controls)", steps(35), () => voiceOver.perform(kc.findNextControl, { capture: true }), true);
-        }
-        if (pg.extras.includes("graphics")) {
-          await back();
-          await run("Graphics (VO-Cmd-G, find next graphic)", steps(25), () => voiceOver.perform(kc.findNextGraphic, { capture: true }), true);
-        }
-        if (pg.extras.includes("links")) {
-          await back();
-          await run("Links (VO-Cmd-L, find next link)", steps(35), () => voiceOver.nextLink({ capture: true }), true);
         }
 
         if (pg.extras.includes("accordion")) {
@@ -320,6 +339,24 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
             return "done";
           });
         }
+        if (bannerAtStart) {
+          await back();
+          await run("Tab order from the top (Tab key) after the cookie banner was closed", steps(pg.tabs), () => voiceOver.press("Tab"), false);
+        }
+
+        if (pg.extras.includes("controls")) {
+          await back();
+          await run("Form controls / buttons (VO-Cmd-J, find next control; carousel and video controls)", steps(35), () => voiceOver.perform(kc.findNextControl, { capture: true }), true);
+        }
+        if (pg.extras.includes("graphics")) {
+          await back();
+          await run("Graphics (VO-Cmd-G, find next graphic)", steps(25), () => voiceOver.perform(kc.findNextGraphic, { capture: true }), true);
+        }
+        if (pg.extras.includes("links")) {
+          await back();
+          await run("Links (VO-Cmd-L, find next link)", steps(35), () => voiceOver.nextLink({ capture: true }), true);
+        }
+
       } finally {
         spoken = await voiceOver.spokenPhraseLog().catch(() => [] as string[]);
         write();
