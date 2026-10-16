@@ -40,22 +40,50 @@ type Section = { title: string; phrases: string[]; end: string };
 const num = (i: number) => String(i).padStart(3, " ");
 const sh = (cmd: string) => { try { return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return "unknown"; } };
 
+const RECAPTCHA_WRITE = /(recaptcha\/(api2|enterprise)\/(reload|userverify|clr|pat|verify|submit))|siteverify|recaptcha.*\/(verify|submit)/i;
+
 // Blocks every non-GET/HEAD request and every reCAPTCHA verify/submit call. Returns the list of blocked requests.
-async function blockWrites(page: Page) {
+// Every page gets a page-level blocker (fetch, XMLHttpRequest, sendBeacon, form.submit), injected before any site
+// script runs. Pages with a form also get Playwright network interception (page.context().route) on top of it.
+// Network interception is not used on the other pages: on the hosted runner the WebKit page stopped responding
+// with it enabled on two pages, and those pages have nothing to submit.
+async function blockWrites(page: Page, network: boolean) {
   const blocked: string[] = [];
-  const recaptchaWrite = /(recaptcha\/(api2|enterprise)\/(reload|userverify|clr|pat|verify|submit))|siteverify|recaptcha.*\/(verify|submit)/i;
-  await page.context().route("**/*", async (route) => {
-    const req = route.request();
-    const method = req.method().toUpperCase();
-    if ((method !== "GET" && method !== "HEAD") || recaptchaWrite.test(req.url())) {
-      let where = req.url();
-      try { const u = new URL(where); where = `${u.host}${u.pathname}`; } catch {}
-      blocked.push(`${method} ${where}`);
-      await route.abort("blockedbyclient").catch(() => {});
-      return;
-    }
-    await route.continue().catch(() => {});
-  });
+  const short = (u: string) => { try { const x = new URL(u, "https://www.miamiboatshow.com"); return `${x.host}${x.pathname}`; } catch { return u.slice(0, 80); } };
+  await page.exposeBinding("__voBlocked", (_src, what: string) => { blocked.push(`${what} (page-level)`); });
+  await page.addInitScript((recaptchaSrc: string) => {
+    const recaptcha = new RegExp(recaptchaSrc, "i");
+    const w = window as any;
+    const note = (m: string, u: string) => { try { let p = u; try { const x = new URL(u, location.href); p = x.host + x.pathname; } catch {} w.__voBlocked?.(`${m} ${p}`); } catch {} };
+    const isWrite = (m?: string) => !/^(GET|HEAD)$/i.test(m || "GET");
+    const origFetch = window.fetch;
+    window.fetch = function (this: any, input: any, init?: any) {
+      const m = (init && init.method) || (input instanceof Request ? input.method : "GET");
+      const u = typeof input === "string" ? input : input?.url ?? String(input);
+      if (isWrite(m) || recaptcha.test(u)) { note(String(m).toUpperCase(), u); return Promise.reject(new TypeError("blocked by the accessibility test harness")); }
+      return origFetch.apply(this, arguments as any);
+    } as any;
+    const open = XMLHttpRequest.prototype.open, send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (this: any, m: string, u: string | URL) { this.__voM = m; this.__voU = String(u); return open.apply(this, arguments as any); } as any;
+    XMLHttpRequest.prototype.send = function (this: any) {
+      if (isWrite(this.__voM) || recaptcha.test(this.__voU || "")) { note(String(this.__voM).toUpperCase(), this.__voU); try { this.abort(); } catch {} return; }
+      return send.apply(this, arguments as any);
+    };
+    Navigator.prototype.sendBeacon = function (u: string | URL) { note("BEACON", String(u)); return false; };
+    HTMLFormElement.prototype.submit = function (this: HTMLFormElement) { note("FORM-SUBMIT", this.action); };
+  }, RECAPTCHA_WRITE.source);
+  if (network) {
+    await page.context().route("**/*", async (route) => {
+      const req = route.request();
+      const method = req.method().toUpperCase();
+      if ((method !== "GET" && method !== "HEAD") || RECAPTCHA_WRITE.test(req.url())) {
+        blocked.push(`${method} ${short(req.url())}`);
+        await route.abort("blockedbyclient").catch(() => {});
+        return;
+      }
+      await route.continue().catch(() => {});
+    });
+  }
   return blocked;
 }
 
@@ -64,14 +92,23 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
     test(`${pg.slug}: read-through, headings, landmarks, Tab order and page-specific checks`, async ({ page, voiceOver, browserName }, testInfo) => {
       const t0 = Date.now();
       const overBudget = () => Date.now() - t0 > BUDGET_MS;
-      const blocked = await blockWrites(page);
+      const network = pg.extras.includes("form") || process.env.VO_ROUTE === "all";
+      const blocked = await blockWrites(page, network);
+      // A WebKit page that stops responding would hang page.evaluate (and Guidepup's navigateToWebContent) until the
+      // test timeout and lose the transcript. Give every evaluate 15 s; on timeout it resolves to undefined.
+      const origEvaluate = page.evaluate.bind(page);
+      let evalTimeouts = 0;
+      (page as any).evaluate = (fn: any, arg?: any) => Promise.race([
+        origEvaluate(fn, arg),
+        new Promise((resolve) => setTimeout(() => { evalTimeouts++; resolve(undefined); }, 15_000)),
+      ]);
       const url = `${ORIGIN}${pg.path}`;
       await page.goto(url, { waitUntil: "load", timeout: 90_000 });
       await page.locator("body").waitFor();
       await page.waitForTimeout(4000);
 
       // Record overlays (consent banners, chat widgets, reCAPTCHA badge) that VoiceOver may encounter. Nothing is dismissed.
-      const pageInfo = await page.evaluate(() => {
+      const pageInfo = (await page.evaluate(() => {
         const vis = (el: Element | null) => !!el && (el as HTMLElement).getClientRects().length > 0 && getComputedStyle(el as HTMLElement).visibility !== "hidden";
         const found: string[] = [];
         const checks: [string, string][] = [
@@ -83,7 +120,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         const cookieDialog = [...document.querySelectorAll("[role=dialog],[aria-modal=true]")].find((d) => vis(d) && /cookie|consent|privacy/i.test(d.textContent ?? ""));
         if (cookieDialog) found.push("visible dialog mentioning cookies/consent/privacy");
         return { overlays: found.join("; ") || "none", lang: document.documentElement.lang || "(none)", title: document.title };
-      });
+      })) ?? { overlays: "unknown (page did not answer page.evaluate within 15 s)", lang: "unknown", title: "unknown" };
 
       await voiceOver.navigateToWebContent();
       await voiceOver.clearSpokenPhraseLog();
@@ -94,12 +131,18 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
       const kc = vo.keyboardCommands ?? {};
       const say = async () => (await voiceOver.lastSpokenPhrase()).replace(/\s+/g, " ").trim();
       // VoiceOver occasionally dies on the hosted runner ("VoiceOver not running"): restart it and go back to the web content.
+      let dead = "";
+      const withTimeout = <T,>(p: Promise<T>, ms: number, what: string) => Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`${what} timed out after ${ms / 1000} s`)), ms))]);
       const back = async () => {
-        try { await voiceOver.navigateToWebContent(); }
+        if (dead) return;
+        try { await withTimeout(voiceOver.navigateToWebContent(), 120_000, "navigateToWebContent"); }
         catch (e) {
           sections.push({ title: "(VoiceOver restarted)", phrases: [], end: String(e).slice(0, 100) });
-          try { await voiceOver.stop(); } catch {}
-          await voiceOver.start(); await page.bringToFront().catch(() => {}); await voiceOver.navigateToWebContent();
+          try {
+            try { await withTimeout(voiceOver.stop(), 30_000, "stop"); } catch {}
+            await withTimeout(voiceOver.start(), 60_000, "start"); await page.bringToFront().catch(() => {});
+            await withTimeout(voiceOver.navigateToWebContent(), 120_000, "navigateToWebContent");
+          } catch (e2) { dead = String(e2).slice(0, 120); sections.push({ title: "(VoiceOver could not return to the page)", phrases: [], end: dead }); write(); }
         }
       };
       const steps = (n: number) => Math.max(1, Math.round(n * STEP_SCALE));
@@ -108,7 +151,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
       // (wrap-around, navigation commands only) or when the time budget is used up.
       const run = async (title: string, max: number, step: () => Promise<unknown>, wrap: boolean) => {
         const phrases: string[] = []; let end = `limit of ${max} steps`; let repeat = 0;
-        if (overBudget()) { sections.push({ title, phrases, end: "skipped: time budget used up" }); write(); return phrases; }
+        if (overBudget() || dead) { sections.push({ title, phrases, end: dead ? "skipped: VoiceOver could not return to the page" : "skipped: time budget used up" }); write(); return phrases; }
         for (let i = 1; i <= max; i++) {
           if (overBudget()) { end = "time budget used up"; break; }
           try { await step(); } catch (e) { end = `error: ${String(e).slice(0, 120)}`; break; }
@@ -124,7 +167,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
       // Free-form section for scripted interactions: each entry is a VoiceOver phrase or a "[...]" annotation.
       const scripted = async (title: string, body: (log: (s: string) => void, sayNow: () => Promise<string>) => Promise<string>) => {
         const phrases: string[] = [];
-        if (overBudget()) { sections.push({ title, phrases, end: "skipped: time budget used up" }); write(); return; }
+        if (overBudget() || dead) { sections.push({ title, phrases, end: dead ? "skipped: VoiceOver could not return to the page" : "skipped: time budget used up" }); write(); return; }
         let end = "done";
         const log = (s: string) => phrases.push(s.replace(/\s+/g, " ").trim());
         try { end = await body(log, async () => { const p = await say(); log(p); return p; }); } catch (e) { end = `error: ${String(e).slice(0, 160)}`; }
@@ -184,6 +227,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
           `Session date (UTC): ${new Date(t0).toISOString()}  |  elapsed: ${Math.round((Date.now() - t0) / 1000)} s`,
           `Mode: ${MODE === "tab" ? "Tab-order supplement; " : ""}real session, published site, no remediation applied; every non-GET request and reCAPTCHA verify/submit call aborted`,
           `Overlays present at load: ${pageInfo.overlays}`,
+          `Network interception (page.route): ${network ? "on" : "off (page-level blocker only)"}  |  page.evaluate timeouts: ${evalTimeouts}`,
           `Blocked requests (never sent): ${blocked.length}${blocked.length ? " — " + [...new Set(blocked)].slice(0, 25).join(", ") : ""}`,
           `Phrases captured: ${total}`,
           ``,

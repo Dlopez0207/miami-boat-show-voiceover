@@ -81,6 +81,13 @@ jobs:
       - name: Prepare macOS for VoiceOver automation
         run: npx -y @guidepup/setup@0.29.1 setup --ci
 
+      # On the hosted runner VoiceOver moves the pointer with its cursor; the default bottom-right hot corner then
+      # opens Quick Note ("Quick Note New Quick Note dialog" in an earlier transcript). Turn hot corners off on this VM.
+      - name: Disable hot corners on the runner
+        run: |
+          for c in tl tr bl br; do defaults write com.apple.dock "wvous-$c-corner" -int 0; done
+          killall Dock || true
+
       - name: Install npm dependencies
         run: npm ci --no-audit --no-fund --no-progress
 

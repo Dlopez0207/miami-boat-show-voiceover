@@ -18,8 +18,11 @@ Cookie banner: the Transcend "This website processes personal data" banner shown
 first in the Tab order. The spec records that, then picks the privacy-preserving choice with VoiceOver ("Opt out of the sale
 of your personal information", then "Okay" if still open) and records the Tab order again.
 
-Safety: the spec aborts every request that is not GET/HEAD and every reCAPTCHA verify/submit call before VoiceOver
-touches the page, so the form is never sent. No personal data is typed.
+Safety: before any site script runs, every page gets a page-level blocker that drops every non-GET/HEAD fetch,
+XMLHttpRequest, sendBeacon and form.submit call and every reCAPTCHA verify/submit call. On the page with the form
+(get-updates) Playwright `page.context().route()` also aborts every non-GET/HEAD request and every reCAPTCHA
+verify/submit request at the network layer, so the form is never sent. Blocked requests are listed in each transcript
+header. The only text typed is the fake value `test`.
 
 Run: Actions → "VoiceOver transcripts (miamiboatshow.com baseline)" → Run workflow. Inputs: `only`
 (e.g. `faq` or `webkit:faq,chromium:home`), `read_scale`, `step_scale`, `mode` (`full`, or `tab` for a Tab-order-only supplement written to
