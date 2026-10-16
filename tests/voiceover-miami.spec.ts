@@ -106,12 +106,17 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         ]);
       };
       const url = `${ORIGIN}${pg.path}`;
+      // In WebKit the sessions on the two pages with the Wistia hero video (home, es-home) hung in every earlier run
+      // (Chromium did not). As a diagnostic, the Wistia player element is neutralized in WebKit on those pages
+      // (set VO_KEEP_WISTIA=1 to keep it). This is recorded in the transcript header.
+      const noWistia = browserName === "webkit" && ["home", "es-home"].includes(pg.slug) && process.env.VO_KEEP_WISTIA !== "1";
+      if (noWistia) await page.addInitScript(() => { try { if (!customElements.get("wistia-player")) customElements.define("wistia-player", class extends HTMLElement {}); } catch {} });
       // The site occasionally renders its error page ("Something went wrong" / TRY AGAIN) instead of the content;
       // when that happens, reload (up to twice) and record it in the header.
       const loadNotes: string[] = [];
       for (let attempt = 1; attempt <= 3; attempt++) {
         await page.goto(url, { waitUntil: "load", timeout: 90_000 });
-        await page.locator("body").waitFor();
+        await page.locator("body").waitFor({ timeout: 30_000 }).catch(() => {});
         await page.waitForTimeout(4000);
         const errorPage = await page.locator("h1", { hasText: "Something went wrong" }).first().isVisible().catch(() => false);
         if (!errorPage) break;
@@ -133,9 +138,6 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         return { overlays: found.join("; ") || "none", lang: document.documentElement.lang || "(none)", title: document.title };
       })) ?? { overlays: "unknown (page did not answer page.evaluate within 15 s)", lang: "unknown", title: "unknown" };
 
-      await voiceOver.navigateToWebContent();
-      await voiceOver.clearSpokenPhraseLog();
-      await voiceOver.clearItemTextLog();
 
       const sections: Section[] = [];
       const vo: any = voiceOver;
@@ -248,6 +250,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
           `Session date (UTC): ${new Date(t0).toISOString()}  |  elapsed: ${Math.round((Date.now() - t0) / 1000)} s`,
           `Mode: ${MODE === "tab" ? "Tab-order supplement; " : ""}real session, published site, no remediation applied; every non-GET request and reCAPTCHA verify/submit call aborted`,
           `Overlays present at load: ${pageInfo.overlays}${loadNotes.length ? "  |  " + loadNotes.join("; ") : ""}`,
+          ...(noWistia ? [`Harness change: Wistia hero video player neutralized in WebKit (diagnostic for earlier hangs); its controls are not in this transcript`] : []),
           `Network interception (page.route): ${network ? "on" : "off (page-level blocker only)"}  |  page.evaluate timeouts: ${evalTimeouts}`,
           `Blocked requests (never sent): ${blocked.length}${blocked.length ? " — " + [...new Set(blocked)].slice(0, 25).join(", ") : ""}`,
           `Phrases captured: ${total}`,
@@ -268,6 +271,11 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         writeFileSync(file, lines.join("\n") + "\n", "utf8");
         return total;
       }
+
+      write();
+      await back();
+      await voiceOver.clearSpokenPhraseLog().catch(() => {});
+      await voiceOver.clearItemTextLog().catch(() => {});
 
       try {
         if (MODE === "full") {
