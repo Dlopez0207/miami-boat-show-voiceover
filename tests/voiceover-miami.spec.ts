@@ -98,10 +98,13 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
       // test timeout and lose the transcript. Give every evaluate 15 s; on timeout it resolves to undefined.
       const origEvaluate = page.evaluate.bind(page);
       let evalTimeouts = 0;
-      (page as any).evaluate = (fn: any, arg?: any) => Promise.race([
-        origEvaluate(fn, arg),
-        new Promise((resolve) => setTimeout(() => { evalTimeouts++; resolve(undefined); }, 15_000)),
-      ]);
+      (page as any).evaluate = (fn: any, arg?: any) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return Promise.race([
+          origEvaluate(fn, arg).finally(() => clearTimeout(timer)),
+          new Promise((resolve) => { timer = setTimeout(() => { evalTimeouts++; resolve(undefined); }, 15_000); }),
+        ]);
+      };
       const url = `${ORIGIN}${pg.path}`;
       await page.goto(url, { waitUntil: "load", timeout: 90_000 });
       await page.locator("body").waitFor();
@@ -273,12 +276,14 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         const TABKEY = browserName === "webkit" ? "Option+Tab" : "Tab";
         const tabLabel = browserName === "webkit" ? "Option-Tab; in WebKit/Safari plain Tab skips links by default" : "Tab key";
         await back();
-        const firstTabs = await run(`Tab order from the top (${tabLabel})`, steps(pg.tabs), () => voiceOver.press(TABKEY), true);
+        // Tab steps are fast (well under 1 s each), so the Tab pass is long enough to wrap around the whole page.
+        const tabSteps = steps(MODE === "tab" ? 240 : pg.tabs * 2);
+        const firstTabs = await run(`Tab order from the top (${tabLabel})`, tabSteps, () => voiceOver.press(TABKEY), true);
         if (firstTabs.slice(0, 8).some((p) => BANNER.test(p))) {
           await back();
           await scripted("Cookie banner: privacy-preserving choice with VoiceOver (Opt out, then Okay if still open)", async (log) => dismissBanner(log));
           await back();
-          await run(`Tab order from the top (${tabLabel}) after the cookie-banner step`, steps(pg.tabs), () => voiceOver.press(TABKEY), true);
+          await run(`Tab order from the top (${tabLabel}) after the cookie-banner step`, tabSteps, () => voiceOver.press(TABKEY), true);
         }
         if (MODE === "full" && browserName === "webkit") {
           await back();
