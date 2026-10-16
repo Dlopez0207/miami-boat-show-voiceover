@@ -79,7 +79,9 @@ jobs:
 
       # Accessibility permissions in the user TCC.db, AppleScript control of VoiceOver, welcome dialog suppressed.
       - name: Prepare macOS for VoiceOver automation
-        run: npx -y @guidepup/setup@0.29.1 setup --ci
+        run: |
+          for i in 1 2 3; do npx -y @guidepup/setup@0.29.1 setup --ci && exit 0; echo "attempt $i failed; retrying"; sleep 15; done
+          exit 1
 
       # On the hosted runner VoiceOver moves the pointer with its cursor; the default bottom-right hot corner then
       # opens Quick Note ("Quick Note New Quick Note dialog" in an earlier transcript). Turn hot corners off on this VM.
