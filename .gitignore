@@ -1,0 +1,7 @@
+node_modules/
+test-results/
+playwright-report/
+transcripts/
+results/
+results-raw/
+SUMMARY.md

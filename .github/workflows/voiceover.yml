@@ -1,0 +1,102 @@
+name: VoiceOver transcripts (miamiboatshow.com baseline)
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated pages or browser:page entries to run (e.g. faq or webkit:faq,chromium:home); all = every entry"
+        default: "all"
+        required: false
+      read_scale:
+        description: "Multiplier for the linear read-through length (1 = default per page)"
+        default: "1"
+        required: false
+      step_scale:
+        description: "Multiplier for headings/landmarks/Tab/extra section lengths (1 = default per page)"
+        default: "1"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Select pages
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          all='[
+            {"browser":"webkit","page":"home"},
+            {"browser":"webkit","page":"get-updates"},
+            {"browser":"webkit","page":"faq"},
+            {"browser":"webkit","page":"download-maps"},
+            {"browser":"webkit","page":"show-overview"},
+            {"browser":"webkit","page":"press"},
+            {"browser":"webkit","page":"press-article"},
+            {"browser":"webkit","page":"why-exhibit"},
+            {"browser":"webkit","page":"es-home"},
+            {"browser":"chromium","page":"home"}
+          ]'
+          only="${ONLY:-all}"
+          picked=$(echo "$all" | jq -c --arg only "$only" '
+            ($only | split(",") | map(gsub("^\s+|\s+$"; ""))) as $w
+            | map(. as $e | select(($w | index("all")) or ($w | index($e.page)) or ($w | index($e.browser + ":" + $e.page))))')
+          echo "matrix={\"include\":$picked}" >> "$GITHUB_OUTPUT"
+          echo "Selected: $picked"
+
+  voiceover:
+    name: VoiceOver / ${{ matrix.browser }} / ${{ matrix.page }}
+    needs: plan
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      # One macOS runner per page so the templates run in parallel (VoiceOver allows one session per machine).
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      VO_PAGES: ${{ matrix.page }}
+      VO_READ_SCALE: ${{ inputs.read_scale }}
+      VO_STEP_SCALE: ${{ inputs.step_scale }}
+      RUNNER_OS_LABEL: macos-15
+      VO_ORIGIN: https://www.miamiboatshow.com
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      # Accessibility permissions in the user TCC.db, AppleScript control of VoiceOver, welcome dialog suppressed.
+      - name: Prepare macOS for VoiceOver automation
+        run: npx -y @guidepup/setup@0.29.1 setup --ci
+
+      - name: Install npm dependencies
+        run: npm ci --no-audit --no-fund --no-progress
+
+      - name: Install Playwright browser
+        run: npx playwright install ${{ matrix.browser }}
+
+      # The Guidepup asset download occasionally fails with "fetch failed"; retry a few times.
+      - name: Install Guidepup VoiceOver assets
+        run: |
+          for i in 1 2 3 4; do npx -y @guidepup/setup@0.29.1 install && exit 0; echo "attempt $i failed; retrying"; sleep 15; done
+          exit 1
+
+      - name: Run the real VoiceOver session and write the transcript
+        run: npx playwright test --project=${{ matrix.browser }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: voiceover-${{ matrix.browser }}-${{ matrix.page }}
+          if-no-files-found: warn
+          path: |
+            transcripts/**
+            test-results/**
+            playwright-report/**
