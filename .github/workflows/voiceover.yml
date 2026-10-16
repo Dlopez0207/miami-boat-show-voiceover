@@ -11,6 +11,10 @@ on:
         description: "Multiplier for the linear read-through length (1 = default per page)"
         default: "1"
         required: false
+      mode:
+        description: "full = every section; tab = Tab-order-only supplement (writes voiceover-transcript-<browser>-tab.txt)"
+        default: "full"
+        required: false
       step_scale:
         description: "Multiplier for headings/landmarks/Tab/extra section lengths (1 = default per page)"
         default: "1"
@@ -62,6 +66,7 @@ jobs:
       VO_PAGES: ${{ matrix.page }}
       VO_READ_SCALE: ${{ inputs.read_scale }}
       VO_STEP_SCALE: ${{ inputs.step_scale }}
+      VO_MODE: ${{ inputs.mode }}
       RUNNER_OS_LABEL: macos-15
       VO_ORIGIN: https://www.miamiboatshow.com
     steps:
@@ -94,7 +99,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: voiceover-${{ matrix.browser }}-${{ matrix.page }}
+          name: voiceover-${{ matrix.browser }}-${{ matrix.page }}-${{ inputs.mode }}
           if-no-files-found: warn
           path: |
             transcripts/**
