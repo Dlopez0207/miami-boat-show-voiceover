@@ -178,21 +178,31 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
       // first in the Tab order. When it shows up, the harness picks the privacy-preserving choice with VoiceOver:
       // VO-Space on "Opt out of the sale of your personal information", then "Okay" if the banner is still open.
       // If it still does not close, the banner is hidden through Transcend's own API (logged as a harness action).
-      const BANNER = /Acknowledge and close dialog|Opt out of the sale|Switch language|cookie consent banner/i;
+      const BANNER = /Acknowledge and close dialog|Opt out of the sale|Switch language|cookie consent banner|Click to disable collection|What can we use data for|show simpler choices|Powered by Transcend/i;
+      // "Opt out of the sale…" opens Transcend's purpose list (pre-checked checkboxes + Confirm). The privacy-preserving
+      // path is: uncheck every checked purpose with VO-Space, then VO-Space on Confirm.
       const dismissBanner = async (log: (s: string) => void) => {
-        for (const [target, label] of [[/Opt out of the sale/i, "Opt out of the sale of your personal information"], [/Acknowledge and close dialog/i, "Okay"]] as const) {
-          let reached = BANNER.test(await say()) && target.test(await say());
-          for (let i = 0; i < 25 && !reached && !overBudget(); i++) { await voiceOver.press("Tab"); const p = await say(); log(p); reached = target.test(p); }
-          if (!reached) continue;
-          log(`[VO-Space on "${label}"]`);
-          await voiceOver.act({ capture: true }); log(await say());
-          await page.waitForTimeout(1500); log(`[after 1.5 s] ${await say()}`);
-          await voiceOver.press("Tab"); const p = await say(); log(`[next Tab] ${p}`);
-          if (!BANNER.test(p)) return "banner closed with VoiceOver";
+        const tab = async () => { await voiceOver.press("Tab"); const p = await say(); log(p); return p; };
+        const act = async (label: string) => { log(`[VO-Space on "${label}"]`); await voiceOver.act({ capture: true }); log(await say()); await page.waitForTimeout(1200); };
+        let p = await say();
+        for (let i = 0; i < 25 && !/Opt out of the sale/i.test(p) && !overBudget(); i++) p = await tab();
+        if (/Opt out of the sale/i.test(p)) {
+          await act("Opt out of the sale of your personal information");
+          p = await say();
+          for (let i = 0; i < 14 && !overBudget(); i++) {
+            if (/\bchecked checkbox/i.test(p) && !/unchecked/i.test(p)) { await act(p.slice(0, 70)); p = await say(); continue; }
+            if (/^Confirm button/i.test(p)) { await act("Confirm"); break; }
+            p = await tab();
+          }
+        }
+        for (let i = 0; i < 3; i++) {
+          p = await tab();
+          if (/Acknowledge and close dialog/i.test(p)) { await act("Okay"); p = await tab(); }
+          if (p && !BANNER.test(p)) return "banner closed with VoiceOver";
         }
         const hid = await page.evaluate(async () => { const t = (window as any).transcend; if (t?.hideConsentManager) { await t.hideConsentManager(); return true; } return false; }).catch(() => false);
-        log(`[harness: banner ${hid ? "hidden with transcend.hideConsentManager()" : "could not be closed"}]`);
-        return hid ? "banner hidden by the harness (not by VoiceOver)" : "banner still open";
+        log(`[harness: ${hid ? "called transcend.hideConsentManager()" : "banner could not be closed"}]`);
+        return hid ? "banner still in the Tab order after the VoiceOver steps; transcend.hideConsentManager() called by the harness" : "banner still open";
       };
       // Presses Tab (spoken output captured) until the focused element matches `selector`, or `max` presses.
       const tabTo = async (selector: string, max: number, log: (s: string) => void) => {
