@@ -44,7 +44,7 @@ jobs:
           ]'
           only="${ONLY:-all}"
           picked=$(echo "$all" | jq -c --arg only "$only" '
-            ($only | split(",") | map(gsub("^\s+|\s+$"; ""))) as $w
+            ($only | split(",") | map(gsub(" "; ""))) as $w
             | map(. as $e | select(($w | index("all")) or ($w | index($e.page)) or ($w | index($e.browser + ":" + $e.page))))')
           echo "matrix={\"include\":$picked}" >> "$GITHUB_OUTPUT"
           echo "Selected: $picked"
