@@ -106,9 +106,17 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
         ]);
       };
       const url = `${ORIGIN}${pg.path}`;
-      await page.goto(url, { waitUntil: "load", timeout: 90_000 });
-      await page.locator("body").waitFor();
-      await page.waitForTimeout(4000);
+      // The site occasionally renders its error page ("Something went wrong" / TRY AGAIN) instead of the content;
+      // when that happens, reload (up to twice) and record it in the header.
+      const loadNotes: string[] = [];
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await page.goto(url, { waitUntil: "load", timeout: 90_000 });
+        await page.locator("body").waitFor();
+        await page.waitForTimeout(4000);
+        const errorPage = await page.locator("h1", { hasText: "Something went wrong" }).first().isVisible().catch(() => false);
+        if (!errorPage) break;
+        loadNotes.push(`load ${attempt}: site error page ("Something went wrong")`);
+      }
 
       // Record overlays (consent banners, chat widgets, reCAPTCHA badge) that VoiceOver may encounter. Nothing is dismissed.
       const pageInfo = (await page.evaluate(() => {
@@ -239,7 +247,7 @@ test.describe("VoiceOver — miamiboatshow.com (baseline, published site)", () =
           `Runner: GitHub Actions ${process.env.RUNNER_OS_LABEL ?? "local"} (run ${process.env.GITHUB_RUN_ID ?? "-"}, attempt ${process.env.GITHUB_RUN_ATTEMPT ?? "-"})`,
           `Session date (UTC): ${new Date(t0).toISOString()}  |  elapsed: ${Math.round((Date.now() - t0) / 1000)} s`,
           `Mode: ${MODE === "tab" ? "Tab-order supplement; " : ""}real session, published site, no remediation applied; every non-GET request and reCAPTCHA verify/submit call aborted`,
-          `Overlays present at load: ${pageInfo.overlays}`,
+          `Overlays present at load: ${pageInfo.overlays}${loadNotes.length ? "  |  " + loadNotes.join("; ") : ""}`,
           `Network interception (page.route): ${network ? "on" : "off (page-level blocker only)"}  |  page.evaluate timeouts: ${evalTimeouts}`,
           `Blocked requests (never sent): ${blocked.length}${blocked.length ? " — " + [...new Set(blocked)].slice(0, 25).join(", ") : ""}`,
           `Phrases captured: ${total}`,
